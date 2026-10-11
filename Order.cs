@@ -14,15 +14,47 @@ public class Order
     //  максимально допустимый процент скидки
     public const double MaxDiscountPercent = 30.0;
 
-    // vинимальная сумма, используемая упрощённым конструктором по умолчанию
+    // минимальная сумма, используемая упрощённым конструктором по умолчанию
     private const double DefaultSum = 1.0;
 
-    public int Number { get; }
-    public Customer Customer { get; }
-    public double Sum { get; private set; }
-    public OrderStatus Status { get; private set; }
-    public DateTime CreatedAt { get; }
+    // все данные заказа закрыты: снаружи их можно только прочитать через геттеры
+    private int number;
+    private Customer customer;
+    private double sum;
+    private OrderStatus status;
+    private DateTime createdAt;
 
+    private List<OrderLine> lines = new List<OrderLine>();
+
+    private Delivery? delivery;
+
+    private List<DiscountRule> rules = new List<DiscountRule>();
+
+
+    public int Number
+    {
+        get { return number; }
+    }
+
+    public Customer Customer
+    {
+        get { return customer; }
+    }
+
+    public double Sum
+    {
+        get { return sum; }
+    }
+
+    public OrderStatus Status
+    {
+        get { return status; }
+    }
+
+    public Delivery? Delivery
+    {
+        get { return delivery; }
+    }
 
     public Order(Customer customer, double sum)
     {
@@ -32,56 +64,161 @@ public class Order
             throw new ArgumentException("Сумма заказа должна быть строго больше нуля");
 
         orderCounter++;
-        Number = orderCounter;
-        Customer = customer;
-        Sum = sum;
-        Status = OrderStatus.New;
-        CreatedAt = DateTime.Now;
+        this.number = orderCounter;
+        this.customer = customer;
+        this.sum = sum;
+        this.status = OrderStatus.New;
+        this.createdAt = DateTime.Now;
     }
 
-   
+
     public Order(Customer customer) : this(customer, DefaultSum)
     {
     }
 
-    public void Pay()
+    // заказ с первой позицией позиция создаётся  до увеличения счётчика заказов
+    // она вычисляется в аргументе, поэтому при ошибке в позиции номер заказа не тратится.
+    public Order(Customer customer, string item, int count, double price)
+        : this(customer, new OrderLine(item, count, price))
     {
-        if (Status != OrderStatus.New)
-            throw new InvalidOperationException(
-                $"Оплатить можно только новый заказ (текущий статус: {Status})");
-        Status = OrderStatus.Paid;
     }
 
-    
+    private Order(Customer customer, OrderLine firstLine) : this(customer, firstLine.GetTotal())
+    {
+        lines.Add(firstLine);
+    }
+
+
+    public void Pay()
+    {
+        if (status != OrderStatus.New)
+            throw new InvalidOperationException(
+                $"Оплатить можно только новый заказ (текущий статус: {status})");
+        status = OrderStatus.Paid;
+    }
+
+
     public void Issue()
     {
-        if (Status != OrderStatus.Paid)
+        if (status != OrderStatus.Paid)
             throw new InvalidOperationException(
-                $"Выдать можно только оплаченный заказ (текущий статус: {Status})");
-        Status = OrderStatus.Issued;
+                $"Выдать можно только оплаченный заказ (текущий статус: {status})");
+        status = OrderStatus.Issued;
     }
 
     public void Cancel()
     {
-        if (Status != OrderStatus.New)
+        if (status != OrderStatus.New)
             throw new InvalidOperationException(
-                $"Отменить можно только неоплаченный заказ (текущий статус: {Status})");
-        Status = OrderStatus.Cancelled;
+                $"Отменить можно только неоплаченный заказ (текущий статус: {status})");
+        status = OrderStatus.Cancelled;
     }
 
-    
+    // позицию создаём сами это и есть композиции
+    public void AddLine(string item, int count, double price)
+    {
+        if (status != OrderStatus.New)
+            throw new InvalidOperationException(
+                $"Менять состав можно только у нового заказа (текущий статус: {status})");
+
+        OrderLine line = new OrderLine(item, count, price);
+        lines.Add(line);
+        sum += line.GetTotal();
+
+
+    }
+
+    // наружу уходят только строки (копии текста), а не сами позиции и не список
+    public string[] GetLinesInfo()
+    {
+        string[] result = new string[lines.Count];
+        for (int i = 0; i < lines.Count; i++)
+            result[i] = lines[i].ToString();
+        return result;
+    }
+
+    // общее количество товаров во всех позициях
+    public int GetItemsCount()
+    {
+        int total = 0;
+        foreach (OrderLine line in lines)
+            total += line.Count;
+        return total;
+    }
+    public void AssignDelivery(Delivery delivery)
+    {
+        if (delivery is null)
+            throw new ArgumentNullException(nameof(delivery), "Доставка должна быть указана");
+        if (status != OrderStatus.New)
+            throw new InvalidOperationException(
+                $"Менять доставку можно только у нового заказа (текущий статус: {status})");
+
+        this.delivery = delivery;
+    }
+    //  правило скидки правило приходит извне его тип заказу неизвестен
+    public void AddDiscountRule(DiscountRule rule)
+    {
+        if (rule is null)
+            throw new ArgumentNullException(nameof(rule), "Правило скидки должно быть указано");
+        if (status != OrderStatus.New)
+            throw new InvalidOperationException(
+                $"Менять правила можно только у нового заказа (текущий статус: {status})");
+
+        rules.Add(rule);
+    }
+
+    // применить все правила одним циклом не проверяя их типы
+    // общая скидка ограничена MaxDiscountPercent поэтому инвариант из ЛР1 защищён
+    public void ApplyDiscountRules()
+    {
+        if (status != OrderStatus.New)
+            throw new InvalidOperationException(
+                $"Скидку можно применить только к новому заказу (текущий статус: {status})");
+
+        int itemsCount = GetItemsCount();
+        double totalDiscount = 0;
+
+        foreach (DiscountRule rule in rules)
+        {
+            double discount = rule.CalculateDiscount(sum, itemsCount);
+            if (discount < 0)
+                throw new InvalidOperationException("Правило скидки вернуло отрицательное значение");
+            totalDiscount += discount;
+        }
+
+        double maxDiscount = sum * MaxDiscountPercent / 100.0;
+        if (totalDiscount > maxDiscount)
+            totalDiscount = maxDiscount;
+
+        double newSum = sum - totalDiscount;
+        if (newSum <= 0)
+            throw new InvalidOperationException(
+                "После применения скидки сумма заказа стала бы некорректной (<= 0)");
+
+        sum = newSum;
+    }
+
+    // Итог к оплате: сумма товаров плюс доставка (если она назначена).
+    public double CalculateTotal()
+    {
+        if (delivery is null)
+            return sum;
+        return sum + delivery.Cost;
+    }
+
+
     public void ApplyDiscount(double percent)
     {
-        
-        ApplyDiscount(percent, Sum);
+
+        ApplyDiscount(percent, sum);
     }
 
-    
+
     public void ApplyDiscount(double percent, double maxDiscountSum)
     {
-        if (Status != OrderStatus.New)
+        if (status != OrderStatus.New)
             throw new InvalidOperationException(
-                $"Скидку можно применить только к новому заказу (текущий статус: {Status})");
+                $"Скидку можно применить только к новому заказу (текущий статус: {status})");
         if (percent <= 0)
             throw new ArgumentException("Процент скидки должен быть больше нуля");
         if (percent > MaxDiscountPercent)
@@ -90,16 +227,16 @@ public class Order
         if (maxDiscountSum <= 0)
             throw new ArgumentException("Максимальная сумма скидки должна быть больше нуля");
 
-        double discount = Sum * percent / 100.0;
+        double discount = sum * percent / 100.0;
         if (discount > maxDiscountSum)
             discount = maxDiscountSum;
 
-        double newSum = Sum - discount;
+        double newSum = sum - discount;
         if (newSum <= 0)
             throw new InvalidOperationException(
                 "После применения скидки сумма заказа стала бы некорректной (<= 0)");
 
-        Sum = newSum;
+        sum = newSum;
     }
 
     public static int GetOrdersCreatedCount()
@@ -109,6 +246,6 @@ public class Order
 
     public override string ToString()
     {
-        return $"Заказ №{Number} ({Customer.Name}): {Sum:F2} руб., статус: {Status}, создан: {CreatedAt:g}";
+        return $"Заказ №{number} ({customer.Name}): {sum:F2} руб., статус: {status}, создан: {createdAt:g}";
     }
 }
