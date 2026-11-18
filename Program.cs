@@ -15,7 +15,8 @@ public static class Program
         {
             new CourierDelivery(250, 600),
             new PickupDelivery("Пункт выдачи, ул. Тверская, 7"),
-            new PostDelivery(120, 1500)
+            new PostDelivery(120, 1500),
+            
         };
 
         // разные правила скидок лежат в массиве типа интерфейса
